@@ -18,6 +18,8 @@ doc_title: "DDS slow-down on large scale system."
 # Author names, ordered as a list. Each author name should be formatted as 'First Last'
 authors:
   - "Tiago Ribeiro"
+  - "Michael Reuter"
+  - "Dave Mills"
 
 # Current document revision date, YYYY-MM-DD
 # Only set this field if you need to manually fix the revision date;
@@ -37,9 +39,11 @@ authors:
 copyright: "2020, Association of Universities for Research in Astronomy, Inc. (AURA)"
 
 # Description. A short, 1-2 sentence statemement used by document indices.
-description: "When deploying the Telescope and Site systems for the main telescope at NCSA we started to experience severe startup slow downs. These occurrences affected components both using SalObj and SAL (e.g. CCCamera) and manifested mainly by timeout's in getting historical data followed by the communication being seriously unstable.
+description: "When deploying the Telescope and Site systems for the main telescope at NCSA we started to experience severe startup slow downs of up to 1 minute (the timeout in waiting for DDS initialization) when starting up components.
+These occurrences affected components both using SalObj and SAL (e.g. CCCamera) and manifested mainly by timeout's in getting historical data followed by the communication being seriously unstable.
 
-With the deployment of a new cycle (with xml 6.1) we decided to take a more close look at the problem. This tech-note describes the findings, proposed solutions and points of concern for the future deployment."
+With the deployment of a new cycle (with xml 6.1) we decided to take closer look at the problem.
+This tech-note describes the findings, proposed solutions, and points of concern for the future deployment."
 
 # Abstract, if available
 # abstract: >
