@@ -46,10 +46,11 @@
 
 .. note::
 
-   When deploying the Telescope and Site systems for the main telescope at NCSA we started to experience severe startup slow downs.
+   When deploying the Telescope and Site systems for the main telescope at NCSA we started to experience severe startup slow downs of up to 1 minute (the timeout in waiting for DDS initialization) when starting up components.
    These occurrences affected components both using SalObj and SAL (e.g. CCCamera) and manifested mainly by timeout's in getting historical data followed by the communication being seriously unstable.
 
-   With the deployment of a new cycle (with xml 6.1) we decided to take a more close look at the problem. This tech-note describes the findings, proposed solutions and points of concern for the future deployment.
+   With the deployment of a new cycle (with xml 6.1) we decided to take closer look at the problem.
+   This tech-note describes the findings, proposed solutions, and points of concern for the future deployment.
 
 .. _Introduction:
 
@@ -58,13 +59,13 @@ Introduction
 
 Up until early 2020, practically all system deployment, integration and on-sky operations where conducted with the Auxiliary Telescope (AT) components.
 Some limited and isolated testing with the Main Telescope (MT) components where performed at the summit and local developers environment.
-On these occasions the DDS communication mostly worked as expected, with some occasional failures or unreliable message exchanges occurrences, but nothing that would prevent users from operating the system.
+On these occasions the DDS communication mostly worked as expected, with some occasional failures or unreliable message exchanges occurred, but nothing that would prevent users from operating the system.
 
 Nevertheless, with the onset of more intensive testing with the MT components (initially at NCSA test stand and then at the base facility) we started to experience routine severe system failures.
 These failures would mostly manifest once a sufficiently large number of more intensive components (e.g. MTM1M3 and MTMount) where brought up in the system.
 Initially, they where observed mainly by users trying to run control sequences from Jupyter notebooks in nublado, though it was soon realized that the problem affected all other components in the system (salkafka producers, CSCs running SAL and SalObj).
 
-Following, are some details of the history and experience accumulated over time with DDS, results of the investigation conducted at NCSA test stand about this new failure mode and the proposed solution.
+In the following, we present some details of the history and experience accumulated over time with DDS, results of the investigation conducted at NCSA test stand about this new failure mode and the proposed solution.
 
 .. note::
 
@@ -75,14 +76,22 @@ Following, are some details of the history and experience accumulated over time 
 Overview
 ========
 
-The test started by using the OpenSplice standard deployment, which employ the DDS :ref:`single process mode <fig-single-process>`.
-This operation mode has been used with the Vera Rubin Observatory system from the beginning and, despite some occasional issues, worked relatively well over time.
+The test started by using the OpenSplice standard deployment, which employs the DDS :ref:`single process mode <fig-single-process>`.
+This mode of operation has been used with the Vera Rubin Observatory system from the beginning and, despite some occasional issues, worked relatively well over time.
 In fact, most of the time we encountered issues with the DDS communication we could relate them to one of the following issues:
 
-  * Wrong DDS partition.
+  * Incorrect DDS partition.
 
     The DDS partition is controlled by SAL and SalObj by the ``LSST_DDS_DOMAIN`` system environment variable.
     It was common on some occasions that users would set different values for that variable, which causes DDS to filter the messages and communication would not work.
+
+    Diagnostics consists of making sure the environment variable is correctly set.
+    In most cases this would involve login to the machine running the service and printing the variable. e.g.;
+
+    .. prompt:: bash
+
+      printenv LSST_DDS_DOMAIN
+
     The solution is to make sure everyone on the system has the same values for the environment variable.
 
   * Systems running incompatible versions of xml interface.
@@ -93,12 +102,16 @@ In fact, most of the time we encountered issues with the DDS communication we co
     A mitigation to this problem was introduced in recent versions of SAL where topics identity was attached to a hash code based on its content.
     This allowed users to upgrade topics without colliding with previous cached versions but also meant that incompatible versions silently fail to communicate.
 
+    Diagnosing this issue mainly requires developers to confirm the deployed version of the libraries, and vary considerably from sub-system to sub-system.
+
   * Systems running with incompatible versions of SAL/SalObj.
 
     SAL and SalObj are responsible for managing topics Quality of Service (QoS) parameters.
     The system defines 4 different types of QoS depending on the "type" of topic: Command, Event, Telemetry and Acknowledgement.
     Topics with different QoS may sometimes be filtered out by the DDS reader so, an incompatible version of SAL/SalObj may not be able to exchange some messages.
     This was improved considerably in more recent versions of SAL/SalObj and we have been able to keep breakages to a minimum, especially by rigidly managing deployments.
+
+    Diagnosing this issue also requires manually confirming the version of the deployed libraries.
 
   * Wrong network attached.
 
@@ -107,8 +120,45 @@ In fact, most of the time we encountered issues with the DDS communication we co
     For servers with more than one "suitable network" it may happen that the selected network is not the correct one.
     In this cases, users must edit the configuration file and explicitly select network attached to where the DDS communication is supposed to happen.
 
+    The first step in diagnosing this problem is to very the ``ospl.xml`` configuration file (e.g. see :ref:`Appendix-Standard-OpenSplice-Configuration`).
+    The session, ``DDSI2Service > General > NetworkInterfaceAddress`` of the xml file specifies the network for the DDS communication.
+    The default value is ``AUTO`` and it should otherwise specify a network name or IP address.
+
+    If configured in ``AUTO`` mode then the selected network will be logged in the ``ospl-info.log`` file created by the process.
+    Inspecting the file you should see something like this:
+
+    .. code-block:: text
+
+      ========================================================================================
+      Report      : WARNING
+      Date        : 2020-08-04T22:39:02+0000
+      Description : using network interface eth0 (10.32.10.140) selected arbitrarily from: eth0, net1
+
+      Node        : nb-tribeiro-w-2020-30
+      Process     : python3.7 <4025>
+      Thread      : ddsi2 7f5495cc5700
+      Internals   : 6.9.190925OSS///ddsi2/q_nwif.c/989/0/1596580769.009714659/0
+      ========================================================================================
+
+    As it is possible to see in the "Description"  field above, the selected interface was ``eth0``, whereas the user was most likely interested in connecting to ``net1``.
+
+    If, on the other hand, the configuration is explicitly selecting a network, one must make sure that it is the correct network.
+    This will most likely require confirmation with IT or other knowledgeable party.
+
+    To check the available network interfaces one can usually use the linux ``ip`` command:
+
+    .. prompt:: bash
+
+      ip addr
+
+
+.. _HRTO:
+
 As we started to operate the system with an increased number of components, and especially, components with large sets of topics published at higher frequencies (20 to 50 Hz, as opposed to 1Hz) we started to observe a new failure mode.
-This failure would, in principle, happened at random and is mostly characterized by long or timeouts in reading historical data followed by unreliable DDS communication.
+The historical read timeout (henceforth HRTO_) failure, seemed to happened at random and is mostly characterized by long or timeouts in reading historical data followed by unreliable DDS communication.
+The timeout is controlled by an environment variable set at deployment time and was set between 60 to 300 seconds, depending on the component.
+When the failure mode was in effect, components (CSCs and salkafka producers alike) would timeout during initialization.
+Users trying to interact with the system using the nublado Jupyter notebook server would also experience the timeout (which was initially set to 300s and later changed to 60s), followed by messages on the console informing of the failure to read historical data.
 
 It is important to emphasize that reading historical data is a standard DDS procedure and consists of synchronizing the internal DDS read queues with all the other components in the system.
 The communication is actually established before this synchronization occurs and it is even possible to receive newly published data before it finishes.
@@ -120,7 +170,7 @@ Note that Command, Telemetry and Acknowledgement topics are configured with disp
 DDS Communication Architecture
 ==============================
 
-Before describing the tests performed at NCSA, it might be useful to have some understanding of how OpenSplice DDS communication works.
+Before describing the tests performed at NCSA, it is important to have an understanding of how OpenSplice DDS communication works.
 Basically, the communication is broken down into a set of services, that are in charge of a particular aspect of the process.
 These services are highly configurable and it is even possible to run the the system with only a subset of them.
 
@@ -138,7 +188,7 @@ By default only the `networking` and `durability` services are configured.
 Furthermore, OpenSplice DDS can be configured to run in two modes of operation, :ref:`single process <fig-single-process>` or :ref:`shared memory <fig-shared-memory>`.
 When running in single process mode, the configured DDS services will run in the same process as the application.
 That means, alongside the resources needed by the application itself to run (computing, memory allocation, etc) there will also be additional resources needed by the DDS services themselves.
-In addition, there is also the question of how those additional resources are handled by the application and the programming language itself.
+How those additional resources are handled by the application and the programming language itself may have a considerable impact on the system responsiveness and reliability.
 For instance, Python does not easily support multiprocessing, so DDS services will be competing for the same computing resources as those needed by the application to run properly.
 
 .. figure:: /_static/SingleProcessFig.png
@@ -153,9 +203,9 @@ For instance, Python does not easily support multiprocessing, so DDS services wi
    In the right hand panel, a high level overview of a group of applications (CSCs, salkafka producers, etc).
    Each application runs their own DDS services alongside their processes.
 
-As one can imagine, this architecture will not scale well for large scale systems.
+As one can imagine, the single process architecture does not scale well for large scale systems.
 If the DDS communication grows large enough (in terms of number of topics and published frequency) the processing requirements for the DDS services alone may start to interfere with the application and vice-versa.
-To overcome this problem, OpenSplice DDS can be configured to run in shared memory mode.
+To overcome this problem, OpenSplice DDS can be configured to run in shared memory mode, which is, in fact, recommended by ADLink for operating large scale systems.
 
 When running in shared memory mode, the user configures and runs a single daemon per node that is dedicated to running the OpenSplice services.
 Applications running in the same node can then be configured to attach to the daemon using system shared memory.
@@ -178,7 +228,7 @@ The computing resources needed by the DDS services are separated from those of t
 NCSA Standard Deployment Test
 =============================
 
-This test consisted of trying to reproduce the failure mode observed in multiple occasions at the NCSA test stand when running the MT components.
+This test consisted of trying to reproduce the HRTO_ failure mode observed in multiple occasions at the NCSA test stand when running the MT components.
 For that, we wanted to make sure we started with a fresh system and also deployed all the components with the :ref:`standard OpenSplice configuration <Appendix-Standard-OpenSplice-Configuration>`.
 
 All SAL components where brought down so that there was no DDS traffic to start with.
@@ -254,8 +304,8 @@ It also proved to be a good strategy when deploying systems on Kubernetes cluste
 
 
 Although not all components subscribes to each other topics, the :ref:`network topology diagram <fig-net-topology-full-community>` displays an extremely high inter-connectivity between all the different components/hosts.
-To begin with, note the IP address ``239.255.0.1`` in the diagram, which is the multicast server and receives traffic from all the components.
-A more close look into the diagram show that there are two distinct behavior, related to the two different types of services deployed; CSCs and salkafka producers.
+To begin with, note the IP address ``239.255.0.1`` in the diagram, which is the multicast address utilized by traffic from all the components.
+A more close look into the diagram show that there are two distinct behaviors, related to the two different types of services deployed; CSCs and salkafka producers.
 
 CSCs will send and receive DDS traffic to all other components of the system, whereas salkafka producers will send and receive traffic from CSCs only.
 This is more easily seen by filtering all the inbound and outbound traffic to one of the CSCs and to one of the salkafka producers individually.
@@ -271,7 +321,7 @@ Diagrams with the traffic to the MT pointing component (MTPtg, hostname ``lsst-l
 One of the reasons we selected the salkafka producer (``lsst-l1-cl-tss16``) for the diagram in :numref:`fig-net-topology-inset-community`, is that it does not subscribe to any of the CSCs running on the system at that time.
 Still, the component is receiving DDS traffic for all the CSCs.
 
-At the same time, the MTPtg is a component that no other CSC subscribe to events or telemetry from.
+At the same time, the MTPtg is a component that no other CSC currently subscribe to events or telemetry from.
 This is one of the main actor component of the system and it operates mainly by sending commands to other CSCs (MTMount and Rotator).
 Still, this CSC sends and receives DDS traffic from all the other CSCs, in addition to all salkafka producers in the system.
 
@@ -302,15 +352,18 @@ To make sure the system would work properly we had to enable two additional feat
 In addition the container must also share a common ``/tmp`` folder with read and write access to all users and groups.
 This is required so containers can access a socket and a lock file created by the ospl daemon and needed for the shared memory process to work.
 
-Finally, shared memory is activate by use of a specific :ref:`ospl configuration <Appendix-Shared-Memory-OpenSplice-Configuration>`, which must be the same for the daemons and applications.
+Finally, shared memory is activated by use of a specific :ref:`ospl configuration <Appendix-Shared-Memory-OpenSplice-Configuration>`, which must be the same for the daemons and applications.
 
-Once all the components where updated to the licensed version of OpenSplice and with the new configuration and the daemons where ready, they where deployed into a fresh system (see :ref:`NCSA-Standard-Deployment-Test` for details).
-The daemons myst be deployed first, so that the OpenSplice DDS services become available.
-Next we brought up all the CSCs, one by one, and salkafka producers following the same process of the :ref:`standard configuration test <NCSA-Standard-Deployment-Test>`.
+Once all the components where updated to the licensed version of OpenSplice with the :ref:`new configuration <Appendix-Shared-Memory-OpenSplice-Configuration>` and the daemons where ready, they where deployed into a fresh system (see :ref:`NCSA-Standard-Deployment-Test` for details).
+The daemons must be deployed first, so that the OpenSplice DDS services become available.
+Next we brought up all the CSCs, one by one, and salkafka producers following the same process of the :ref:`standard configuration test <NCSA-Standard-Deployment-Test>`, measuring the network traffic as each new component was initialized.
 
-This time we did not observed issues when trying to bring the producers up after all CSCs where running.
-We also did not observed any issues trying to start remotes to communicate with the CSCs.
-As expected, the :ref:`network topology now <fig-net-topology-shared-mem>` shows that only the ospl daemons (``lsst-l1-cl-tss11`` and ``lsst-l1-cl-tss30``) are communicating with each other,  since they in charge of the OpenSplice DDS services.
+This time we did not observe issues when trying to bring the producers up after all CSCs where running.
+We also did not observed any issues trying to start remotes to communicate with the CSCs, when also using the shared memory mode.
+However, we did observe the HRTO_ issue if we try to initialize a remote without using the shared memory mode.
+
+As expected, the :ref:`network topology now <fig-net-topology-shared-mem>` shows that only the ospl daemons (``lsst-l1-cl-tss11`` and ``lsst-l1-cl-tss30``) are communicating with each other, since they in charge of the OpenSplice DDS services.
+Furthermore the steady state network traffic was down to around 1.5 Mbps, as opposed to 3.5 Mbps observed in the :ref:`previous test <NCSA-Standard-Deployment-Test>`.
 
 .. figure:: /_static/net_topology_shared_mem.png
    :name: fig-net-topology-shared-mem
