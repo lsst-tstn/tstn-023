@@ -97,7 +97,7 @@ In fact, most of the time we encountered issues with the DDS communication we co
     The xml interface determines the DDS topics data structure.
     If topics with the same identity have different data structures the last system to try to connect to the DDS network will fail.
     This created several issues in the past as DDS cache would prevent users from upgrading the topic data structure.
-    A mitigation to this problem was introduced in recent versions of SAL in which a hash code based on topics content was attached to its name.
+    A mitigation to this problem was introduced in recent versions of SAL in which a hash code based on topics content was appended to its name.
     This allowed users to upgrade topics without colliding with previous cached versions but also meant that incompatible versions silently fail to communicate.
 
     Diagnosing this issue mainly requires developers to confirm the deployed version of the libraries, and vary considerably from sub-system to sub-system.
@@ -116,7 +116,7 @@ In fact, most of the time we encountered issues with the DDS communication we co
     By default the OpenSplice configuration will automatically select a network to attach to.
     It mainly works by selecting the first suitable network (excluding local and loopback networks for instance) in alphabetical order.
     For servers with more than one "suitable network" it may happen that the selected network is not the correct one.
-    In this cases, users must edit the configuration file and explicitly select network attached to were the DDS communication is supposed to happen.
+    In this case, users must edit the configuration file and explicitly specify which network to use for the DDS communication.
 
     The first step in diagnosing this problem is to verify the ``ospl.xml`` configuration file (e.g. see :ref:`Appendix-Standard-OpenSplice-Configuration`).
     The session, ``DDSI2Service > General > NetworkInterfaceAddress`` of the xml file specifies the network for the DDS communication.
@@ -415,7 +415,7 @@ Details on the Kubernetes deployment are available `here <https://tstn-019.lsst.
 One important feature we noticed from the beginning of the tests with Kubernetes nodes is that the OpenSplice daemons are highly sensitive to shutdown procedures.
 Applications attached to the daemons must not be forcibly terminated or they risk corrupting the daemons shared memory, ultimately affecting all applications attached to it.
 To prevent this from happening applications should either shutdown gracefully which, in case of most CSCs, means exiting when commanded to ``OFFLINE`` state, or be terminated with a ``SIGTERM`` signal.
-Terminating an application attached to a daemon with any other signal than ``SIGTERM`` (e.g. ``SIGINT``) will cause the corruption problem.
+Terminating an application attached to a daemon with any other signal than ``SIGTERM`` (e.g. ``SIGINT``, ``SIGKILL``, etc) will cause the corruption problem.
 
 In order to prevent this from happening in the Kubernetes deployment we had to implement additional features in the container startup procedure, to make sure termination signals (sent by Kubernetes) are properly propagated and to wait until the running application exits.
 
