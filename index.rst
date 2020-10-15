@@ -52,24 +52,22 @@
    With the deployment of a new cycle (with xml 6.1) we decided to take closer look at the problem.
    This tech-note describes the findings, proposed solutions, and points of concern for the future deployment.
 
+   These tests occurred initially in the week of July 20-24, 2020, and further enhanced by a second campaign in August and September of 2020.
+
 .. _Introduction:
 
 Introduction
 ============
 
-Up until early 2020, practically all system deployment, integration and on-sky operations where conducted with the Auxiliary Telescope (AT) components.
-Some limited and isolated testing with the Main Telescope (MT) components where performed at the summit and local developers environment.
+Up until early 2020, practically all system deployment, integration and on-sky operations were conducted with the Auxiliary Telescope (AT) components.
+Some limited and isolated testing with the Main Telescope (MT) components were performed at the summit and local developers environment.
 On these occasions the DDS communication mostly worked as expected, with some occasional failures or unreliable message exchanges occurred, but nothing that would prevent users from operating the system.
 
 Nevertheless, with the onset of more intensive testing with the MT components (initially at NCSA test stand and then at the base facility) we started to experience routine severe system failures.
-These failures would mostly manifest once a sufficiently large number of more intensive components (e.g. MTM1M3 and MTMount) where brought up in the system.
-Initially, they where observed mainly by users trying to run control sequences from Jupyter notebooks in nublado, though it was soon realized that the problem affected all other components in the system (salkafka producers, CSCs running SAL and SalObj).
+These failures would mostly manifest once a sufficiently large number of high data rate components, components with a large number of topics or that subscribes to topics from several other components (e.g. MTM1M3 and MTMount) were brought up in the system.
+Initially, they were observed mainly by users trying to run control sequences from Jupyter notebooks in nublado, though it was soon realized that the problem affected all other components in the system (salkafka producers, CSCs running SAL and SalObj).
 
 In the following, we present some details of the history and experience accumulated over time with DDS, results of the investigation conducted at NCSA test stand about this new failure mode and the proposed solution.
-
-.. note::
-
-   These tests occurred in the week of July 20-24, 2020.
 
 .. _Overview:
 
@@ -99,7 +97,7 @@ In fact, most of the time we encountered issues with the DDS communication we co
     The xml interface determines the DDS topics data structure.
     If topics with the same identity have different data structures the last system to try to connect to the DDS network will fail.
     This created several issues in the past as DDS cache would prevent users from upgrading the topic data structure.
-    A mitigation to this problem was introduced in recent versions of SAL where topics identity was attached to a hash code based on its content.
+    A mitigation to this problem was introduced in recent versions of SAL in which a hash code based on topics content was appended to its name.
     This allowed users to upgrade topics without colliding with previous cached versions but also meant that incompatible versions silently fail to communicate.
 
     Diagnosing this issue mainly requires developers to confirm the deployed version of the libraries, and vary considerably from sub-system to sub-system.
@@ -118,9 +116,9 @@ In fact, most of the time we encountered issues with the DDS communication we co
     By default the OpenSplice configuration will automatically select a network to attach to.
     It mainly works by selecting the first suitable network (excluding local and loopback networks for instance) in alphabetical order.
     For servers with more than one "suitable network" it may happen that the selected network is not the correct one.
-    In this cases, users must edit the configuration file and explicitly select network attached to where the DDS communication is supposed to happen.
+    In this case, users must edit the configuration file and explicitly specify which network to use for the DDS communication.
 
-    The first step in diagnosing this problem is to very the ``ospl.xml`` configuration file (e.g. see :ref:`Appendix-Standard-OpenSplice-Configuration`).
+    The first step in diagnosing this problem is to verify the ``ospl.xml`` configuration file (e.g. see :ref:`Appendix-Standard-OpenSplice-Configuration`).
     The session, ``DDSI2Service > General > NetworkInterfaceAddress`` of the xml file specifies the network for the DDS communication.
     The default value is ``AUTO`` and it should otherwise specify a network name or IP address.
 
@@ -163,7 +161,7 @@ Users trying to interact with the system using the nublado Jupyter notebook serv
 It is important to emphasize that reading historical data is a standard DDS procedure and consists of synchronizing the internal DDS read queues with all the other components in the system.
 The communication is actually established before this synchronization occurs and it is even possible to receive newly published data before it finishes.
 Nevertheless, historical data (for previously published Events) will not be available until the operation is completed.
-Note that Command, Telemetry and Acknowledgement topics are configured with disposable QoS durability, which means that no historical data is received.
+Note that in SAL v4 and SalObj v5, commands and command acknowledgements topics are configured with volatile QoS durability, which means that no historical data is available.
 
 .. _DDS-Communication-Architecture:
 
@@ -223,6 +221,41 @@ The computing resources needed by the DDS services are separated from those of t
   In the right hand panel, a high level overview of a group of applications running in the same node (CSCs, salkafka producers, etc) sharing the OpenSplice DDS services.
 
 
+.. _DDS-Domain-and-DDS-Partition:
+
+DDS Domain and DDS Partitions
+-----------------------------
+
+DDS provides two different ways to isolate (or organize) topics; domain and partitions.
+
+A DDS domain is a logical network of applications.
+For applications to communicate using DDS they must participate in the same domain.
+Components in different domains are completely isolated from each other.
+For instance, applications running on different domains can have incompatible versions of the same topic on the same network without interfering with each other.
+
+DDS partitions, on the other hand, provides a way of organizing topics on the same domain into different groups.
+The topics are still all part of the same network so all readers and writers on the system must have compatible versions of the topics.
+Nevertheless, if a particular reader would/should never read data from a particular writer, they can be isolated by making sure they are on different partitions.
+The DDS network service still receives the data, which is then filtered out and not made available to the upstream services.
+
+For instance, imagine a system composed of two applications; one that publishes telemetry and subscribes to commands and another that subscribes to telemetry and publishes commands.
+The first application would never read telemetry, only publishes it.
+At the same time, the second application would never read commands, only publishes it.
+
+If all the data is written in the same partition, it means the data reader **on both** applications receives and must handle both telemetry and commands, see left-hand panel on :numref:`fig-partition`.
+On the other hand, if telemetry and commands are placed in two different partitions, the data reader from the first component (that publishes telemetry) would not receive the data the component itself publish (right-hand panel on :numref:`fig-partition`).
+Overall, this feature allows DDS to optimize the data transfer between readers and writers minimizing the load on :ref:`applications and daemons <DDS-Communication-Architecture>`.
+
+.. figure:: /_static/Partition.png
+   :name: fig-partition
+   :target: ../_images/Partition.png
+   :alt: illustration of the DDS data partitioning
+
+   Illustration of how DDS data partitioning works.
+   Following the discussion in the text, blue arrows represent telemetry data and red arrows commands.
+   On the left hand panel, all data is written to the same partition and therefore, received by all data readers.
+   On the right hand panel data is partitioned so that the reader of the component that writes the data does not receive it back.
+
 .. _NCSA-Standard-Deployment-Test:
 
 NCSA Standard Deployment Test
@@ -231,7 +264,7 @@ NCSA Standard Deployment Test
 This test consisted of trying to reproduce the HRTO_ failure mode observed in multiple occasions at the NCSA test stand when running the MT components.
 For that, we wanted to make sure we started with a fresh system and also deployed all the components with the :ref:`standard OpenSplice configuration <Appendix-Standard-OpenSplice-Configuration>`.
 
-All SAL components where brought down so that there was no DDS traffic to start with.
+All SAL components were brought down so that there was no DDS traffic to start with.
 This was verified using the OpenSplice tools, that allow us to listen for any DDS traffic on the network, and with network traffic analysis tools (e.g. tcpdump and etherape).
 Since the OpenSplice tools also create DDS traffic, we made sure to switch it off and check the network for traffic again (with tcpdump and etherape) before starting the deployment of the system.
 
@@ -255,7 +288,7 @@ At this point it was verified that communication problems manifest when trying t
    The text inside the ellipses are the hostname or the IP address of the component, see text and :numref:`table-services` for more information.
    Arrows indicate the network traffic direction.
 
-Note that, although each CSC/service has their own IP address, in fact they are all being deployed as docker containers from two different host nodes.
+Note that, although each CSC/service has their own IP address, in fact, they are all being deployed as docker containers from two different host nodes.
 The deployment strategy uses docker macvlan network driver to give each container it's own IP address, overlaid on a bridge network.
 This solution proved to be more reliable than use the host network driver option, commonly used in these situations.
 It also proved to be a good strategy when deploying systems on Kubernetes clusters.
@@ -352,18 +385,17 @@ To make sure the system would work properly we had to enable two additional feat
 In addition the container must also share a common ``/tmp`` folder with read and write access to all users and groups.
 This is required so containers can access a socket and a lock file created by the ospl daemon and needed for the shared memory process to work.
 
-Finally, shared memory is activated by use of a specific :ref:`ospl configuration <Appendix-Shared-Memory-OpenSplice-Configuration>`, which must be the same for the daemons and applications.
+Finally, shared memory is activated by use of a specific :ref:`ospl configuration <Appendix-Initial-Shared-Memory-OpenSplice-Configuration>`, which must be the same for the daemons and applications.
 
-Once all the components where updated to the licensed version of OpenSplice with the :ref:`new configuration <Appendix-Shared-Memory-OpenSplice-Configuration>` and the daemons where ready, they where deployed into a fresh system (see :ref:`NCSA-Standard-Deployment-Test` for details).
+Once all the components were updated to the licensed version of OpenSplice with the :ref:`new configuration <Appendix-Initial-Shared-Memory-OpenSplice-Configuration>` and the daemons were ready, they were deployed into a fresh system (see :ref:`NCSA-Standard-Deployment-Test` for details).
 The daemons must be deployed first, so that the OpenSplice DDS services become available.
 Next we brought up all the CSCs, one by one, and salkafka producers following the same process of the :ref:`standard configuration test <NCSA-Standard-Deployment-Test>`, measuring the network traffic as each new component was initialized.
 
-This time we did not observe issues when trying to bring the producers up after all CSCs where running.
+This time we did not observe issues when trying to bring the producers up after all CSCs were running.
 We also did not observed any issues trying to start remotes to communicate with the CSCs, when also using the shared memory mode.
 However, we did observe the HRTO_ issue if we try to initialize a remote without using the shared memory mode.
 
-As expected, the :ref:`network topology now <fig-net-topology-shared-mem>` shows that only the ospl daemons (``lsst-l1-cl-tss11`` and ``lsst-l1-cl-tss30``) are communicating with each other, since they in charge of the OpenSplice DDS services.
-Furthermore the steady state network traffic was down to around 1.5 Mbps, as opposed to 3.5 Mbps observed in the :ref:`previous test <NCSA-Standard-Deployment-Test>`.
+As expected, the :ref:`network topology now <fig-net-topology-shared-mem>` shows that only the ospl daemons (``lsst-l1-cl-tss11`` and ``lsst-l1-cl-tss30``) are communicating with each other, since they are in charge of the OpenSplice DDS services.
 
 .. figure:: /_static/net_topology_shared_mem.png
    :name: fig-net-topology-shared-mem
@@ -371,9 +403,140 @@ Furthermore the steady state network traffic was down to around 1.5 Mbps, as opp
    :alt: Network topology for the full system in shared memory mode
 
    Network topology for the full system in shared memory mode.
-   Even though all components are running, only the OpenSplice daemon communicates with each other over the network.
+   Even though all components are running, only the OpenSplice daemons communicate with each other over the network.
 
-Overall the preliminary results indicate that using the OpenSplice shared memory mode solves the issues we observed previously with a large scale system.
+Overall the preliminary results indicated that using the OpenSplice shared memory mode helps solve the issues we observed previously with a large scale system.
+
+Furthermore, the preliminary tests involved mainly the MT components running on two different nodes.
+The next step was to experiment with an even larger scale system, on an environment that more closely resemble the production environment.
+We then proceeded to deploy both MT and AT components alongside some OCS components (e.g. ScriptQueue and Watcher) on a Kubernetes cluster with several nodes, and some components (LOVE, MTM1M3 and MTM2) on bare metal machines.
+Details on the Kubernetes deployment are available `here <https://tstn-019.lsst.io>`__.
+
+One important feature we noticed from the beginning of the tests with Kubernetes nodes is that the OpenSplice daemons are highly sensitive to shutdown procedures.
+Applications attached to the daemons must not be forcibly terminated or they risk corrupting the daemons shared memory, ultimately affecting all applications attached to it.
+To prevent this from happening applications should either shutdown gracefully which, in case of most CSCs, means exiting when commanded to ``OFFLINE`` state, or be terminated with a ``SIGTERM`` signal.
+Terminating an application attached to a daemon with any other signal than ``SIGTERM`` (e.g. ``SIGINT``, ``SIGKILL``, etc) will cause the corruption problem.
+
+In order to prevent this from happening in the Kubernetes deployment we had to implement additional features in the container startup procedure, to make sure termination signals (sent by Kubernetes) are properly propagated and to wait until the running application exits.
+
+Furthermore, attempts to deploy the full observatory system with the same daemon configuration used for the initial tests on the Kubernetes cluster at NCSA resulted in a highly unstable system.
+For instance, attempts to bring all salkafka producers up at the same time would sometimes cause daemons to fail and, sometimes, crash.
+On other occasions, it was possible to start one producer at a time but the final set of producers would experience the HRTO_ problem we saw before.
+On occasions where it was possible to standup the system successfully it would run for a certain number of hours and then one of the daemons would fail and terminate, killing all the components that were connected to it.
+The most common problem we noticed was that the daemon M1M3 component was attached to would fail, causing the component to crash.
+
+Investigating the log generated by the daemons, we concluded that once we transitioned to deploying an even larger system than before, the daemons themselves started to run out of resources.
+DDS contains some builtin topics used by the middleware system for self configuration and bookkeeping.
+When the problems started to manifest the daemons would log messages of missing heartbeats (this is the DDS internal heartbeat, used to determine the presence of a domain participant) and other missing builtin topics (e.g. ``d_sampleChain``), thus indicating that the daemons were having problems keeping up with the load;
+
+  .. code-block:: text
+
+    ========================================================================================
+    Report      : INFO
+    Date        : 2020-09-03T17:19:02+0000
+    Description : Missed heartbeat for node 105060556. (DCPSPublication is complete)
+    Node        : ospl-daemon-m482p
+    Process     : spliced <148347>
+    Thread      : OSPL Garbage Collector 7f48013ae700
+    Internals   : P674/6.10.4/de6011b/2a9a655/v_spliced/v_spliced.c/2034/769/1599153542.755942957/2
+    ========================================================================================
+    Report      : WARNING
+    Date        : 2020-09-03T17:40:49+0000
+    Description : writer 6672e859:7b:1:a02 topic d_sampleChain waiting on high watermark due to reader 4254ba5d:7f:1:1507
+    Node        : ospl-daemon-m482p
+    Process     : ddsi2 <148361>
+    Thread      : xmit.user 7f20e331b700
+    Internals   : P674/6.10.4/de6011b/2a9a655/ddsi2/q_transmit.c/923/0/1599154849.155224251/2
+    ========================================================================================
+
+In order to solve this issue, it required some further understanding of how DDS communication works and more study on the daemon configuration.
+The goal was to be able to increase the resources available for the OpenSplice daemons to handle the increased load while also reducing the load on the DDS services.
+
+.. _Increasing-OpenSplice-daemon-resources:
+
+Increasing OpenSplice daemon resources
+--------------------------------------
+
+The OpenSplice DDS software configuration provides several different ways of increasing the computing resources available for the daemons, mostly revolving around the memory allocation limits.
+Considering that the :ref:`initial configuration <Appendix-Initial-Shared-Memory-OpenSplice-Configuration>` for the daemons allocated 10 times as much shared memory space then the `standard <https://istkb.adlinktech.com/article/vortex-opensplice-dds-configuration/>`__, we also increased by 10 times the amount of memory available for other daemon services.
+
+In addition to increasing resources for the daemons we also enabled two new features that helps reduce system load; squash participants and lazy alignment.
+
+The squash participant feature allow daemons to "merge" the data structure of all the applications attached to it into a single data structure.
+Therefore, instead of presenting several "participants" to the network, the daemon presents a single unified system that is much leaner to maintain.
+This feature not only helps reduce the data structure complexity but it also reduces discovery time for new components in the system.
+The drawback to squashing participants is that we lose the ability to inspect individual applications data structure.
+For instance, in the default operation mode, it is possible to use OpenSplice tools to list the applications attached to a daemon, inspect which topics the application subscribes to and what is the state of the application readers and writers.
+
+By default, when an application creates a DDS domain participant and joins a partition namespace, DDS allocates resources and starts making data on the partition available to it right away.
+This happens even if the application does not create a data reader for a topic in that partition.
+Although this feature helps reduce subscription times and also increase data recovery, it comes at the expense of resources from the application or the daemon it is attached to.
+In general, we are not relying on DDS history capability to store component data in case of a system crash, which means we have limited use for the default behavior.
+In order to allow for a leaner daemon the configuration was changed to use "lazy alignment".
+With this feature, the readers will only receive and store data that is requested by the applications or, in case of the daemons, application that are attached to them.
+
+The final configuration we arrived at after extensive testing with the system can be seen in :ref:`Appendix-Final-Shared-Memory-OpenSplice-Configuration`.
+
+.. _Implementing-a-new-DDS-data-partitioning-schema:
+
+Implementing a new DDS data partitioning schema
+-----------------------------------------------
+
+It is important to note that the :ref:`configuration <Appendix-Final-Shared-Memory-OpenSplice-Configuration>` discussed in :ref:`Increasing-OpenSplice-daemon-resources` affect only the daemons and not those processes that will still rely on single process mode.
+In order to allow these processes to still run reliably, and also in an attempt to require less resources from the daemons, a new DDS data partitioning schema was implemented.
+
+As explained in :ref:`DDS-Domain-and-DDS-Partition` this feature allows the DDS domain to filter out topics for readers that join the domain in a particular partition.
+To take advantage of this feature without increasing the scope of system configuration complexity, we decided to adopt two different partitions for each component of the system; one partition exclusively for commands and a second one for telemetry, events and acknowledgements.
+This configuration allows us to maximize the segmentation of the system while minimizing the computing resources required by components.
+
+The motivation for this partitioning scheme derives mainly from the system architecture.
+The system architecture specify mainly two component types; Controllers and Remotes, in SalObj nomenclature.
+Controllers are the base components upon which CSCs are created.
+They mainly consist of applications that read commands and write telemetry, events and acknowledgements.
+At the same time, to communicate with a CSC one would use a Remote, which writes commands and reads telemetry, events and acknowledgements.
+
+By allowing a separate partition for read and write operations, components can share most of the resources needed to communicate in both directions while still minimizing data duplication (as shown in :numref:`fig-partition`).
+One could argue that there could be a partition for each individual topic of the system, which would allow readers to only receive the data they are actually requesting.
+The reason for avoiding such thin partitioning is that it would require substantial resource duplication.
+For instance, DDS allows applications to share substantial resources when creating readers and writers on the same partition.
+At the same time, the software architecture allows us to safely share most of those resources for an individual component so, splitting the topics for a component into more partitions means there would be less shared resources.
+
+Details on how this is implemented can be found in `SalObj documentation <https://ts-salobj.lsst.io>`__.
+
+.. _Quality-of-Service-configuration:
+
+Quality of Service configuration
+--------------------------------
+
+Quality of Service (QoS) is a topic-specific configuration that controls many aspects of how information is handled by DDS, including how reliably messages are exchanged and if a topic has historical data (for late joiners).
+Our architecture specifies QoS configuration based on the message type, e.g., commands, events, telemetry and command acknowledgements.
+
+Up to SAL v4 and SalObj v5 the QoS was partially stored in a `QoS file <https://raw.githubusercontent.com/lsst-ts/ts_idl/v1.4.0/qos/DDS_DefaultQoS_All.xml>`__ and partially hard coded into the software code base.
+This created issues, specially when changes to QoS were needed, which required full rebuild of the system.
+As of SAL v5 and SalObj v6 QoS is fully specified by a file stored in the `ts_idl repository <https://github.com/lsst-ts/ts_idl>`__.
+This new QoS file has named profiles for each topic category: commands, events, telemetry, command acknowledgement.
+
+As part of this exercise we adopted a couple changes in the previous QoS settings.
+The most important change to be noted is that now Telemetry topics have durability set to ``VOLATILE``, which means the system will no longer store historical data.
+Since telemetry is continuously published at a set frequency by CSCs, storing historical data gives little to no benefit while imposes an additional load on the DDS systems.
+From now on, events are the only kind of topics that offer historical data.
+They are configured with ``TRANSIENT`` durability, which retains historical data as long as the application that published the data is still running (and have not explicitly disposed the data).
+
+It is also worth noting that ``TRANSIENT`` durability causes the historical data to be stored in memory by all running durability services.
+Ultimately, that means all daemons and applications running in single process mode that are configured with a durability service (the default configuration) end up storing copies of event topics.
+An alternative possibility would be to use ``TRANSIENT_LOCAL`` durability which would cause the historical data to be stored only by the durability service of the application that published the data.
+Although this configuration seemed like a better alternative to reduce the load on the daemons, our tests showed that it resulted in less reliable communication, with overall longer historical read times and occasional HRTO_.
+
+.. _Nublado:
+
+Nublado
+-------
+
+After the initial test it seemed like the Jupyter notebooks from the nublado platform would also have to transition to using the DDS shared memory mode, and therefore, the licensed version of OpenSplice.
+During the tests of the features introduced above it was possible to demonstrate that the single process mode is now capable of joining a domain and communicating with the CSCs in the system.
+In particular, the feature that seems to allow the use of single process mode is the introduction of the :ref:`DDS data partitioning <Implementing-a-new-DDS-data-partitioning-schema>`.
+
+This considerably simplify handling the nublado configuration as the containers can continue to be hosted in public repositories, there is no need to configure them to use shared memory and to worry about users notebooks crashing and corrupting the daemons they are attached to, potentially affecting other systems.
 
 .. _Conclusions-and-Future-Work:
 
@@ -381,30 +544,53 @@ Conclusions and Future Work
 ===========================
 
 From the tests executed at NCSA and described in previous sections, it is clear that the Vera Rubin Observatory Control system has grown large enough to be treated as a large scale system.
-The immediate impact of this growth is that we are no longer able to run the system reliably with the standard OpenSplice DDS configuration.
-The most immediate solution is to switch to shared memory mode, which is the recommended configuration for large scale system.
+The immediate impact of this growth is that we are no longer able to run the system reliably with single process mode configuration.
+The most immediate solution is to switch to shared memory mode, which is the recommended configuration for a large scale system.
 
-This new operation mode impacts considerably how we deploy the system.
-To begin with, we now must now build all the system with a licensed version of OpenSplice, which required them to be privately hosted, rather than publicly accessible (over docker hub).
-Furthermore, we must configure all systems to be able to connect to an ospl daemon, that is in charge of running the OpenSplice DDS services.
-This will affect not only the CSCs Telescope and Site deploy in Kubernetes clusters but also, stand-alone CSCs deployed in embedded systems, nublado notebook servers, Camera, DM CSCs and so forth.
+Further investigation with the full Observatory System shows that the system also requires a non-standard configuration for the daemons, with expanded memory allocations and additional or changed parameters.
+A new data partitioning schema was also implemented, which allows ancillary systems (like nublado notebook servers and, most likely, other embedded components) to operate reliably.
 
-Finally, once a suitable number of systems are brought to a running state with this new configuration, we must also make sure to test it for longer periods of time and make sure they can be operated reliably.
+Nevertheless, this new operational mode impacts considerably how we deploy the system.
+To begin with, we now must now build all the components with a licensed version of OpenSplice, which requires them to be privately hosted, rather than publicly accessible (over docker hub for instance).
+Furthermore, we must configure all components to be able to connect to an ospl daemon, that is in charge of running the OpenSplice DDS services.
+
+From the experiments executed at NCSA it was also possible to identify a potential useful tool to monitor the state of a system.
+The health of the DDS daemons and single process applications alike can be accessed by means of the DDS builtin topics.
+These topics are actually accessible to applications in general and can be setup to monitor those topics.
+It would be extremely helpful to develop a tool to subscribe to and monitor these topics and, therefore, provide information about the general health of the system as a whole.
+
+Finally, we must continue to expand the number of components deployed in a test environment as closely as possible to what the production (e.g. summit) environment will look like.
+This will allow us to determine whether the configuration we propose will result is a stable system or if further changes are needed.
 
 Appendix
 ========
+
+.. _Appendix-Final-Shared-Memory-OpenSplice-Configuration:
+
+Final Shared Memory OpenSplice Configuration
+--------------------------------------------
+
+Example of the adopted OpenSplice Configuration as of September 30, 2020.
+The xml file bellow is adopted for starting daemons and any component that will attach to them.
+
+.. literalinclude:: ospl-6.10.4-shmem-final.xml
 
 .. _Appendix-Standard-OpenSplice-Configuration:
 
 Standard OpenSplice Configuration
 ---------------------------------
 
+Standard, :ref:`single process mode <fig-single-process>` OpenSplice configuration.
+This is an example of an original file used to configure all applications.
+
 .. literalinclude:: ospl.xml
 
-.. _Appendix-Shared-Memory-OpenSplice-Configuration:
+.. _Appendix-Initial-Shared-Memory-OpenSplice-Configuration:
 
-Shared Memory OpenSplice Configuration
---------------------------------------
+Initial Shared Memory OpenSplice Configuration
+----------------------------------------------
+
+Initial configuration used to test shared memory mode.
 
 .. literalinclude:: ospl-6.10.4-shmem.xml
 
