@@ -527,6 +527,67 @@ Ultimately, that means all daemons and applications running in single process mo
 An alternative possibility would be to use ``TRANSIENT_LOCAL`` durability which would cause the historical data to be stored only by the durability service of the application that published the data.
 Although this configuration seemed like a better alternative to reduce the load on the daemons, our tests showed that it resulted in less reliable communication, with overall longer historical read times and occasional HRTO_.
 
+.. _DDS-Master:
+
+DDS Master
+----------
+
+When deploying several applications in different nodes (also called federations), DDS will select a node to serve as the master of the system.
+The master is in charge of keeping a dictionary of all the topics in the system and its durability service will work as the source of historical data for new applications.
+In a sense, the master node acts like a broker for historical data.
+
+The process of selecting a master for the system is handled by DDS using the ``masterPriority`` for each application, which is configured via ``NameSpaces/Policy/masterPriority`` entry in the ospl configuration file.
+
+The selection process is explained in details in the `master priority`_ section of the `ospl deployment guide`_.
+Basically, the system with the highest value of ``masterPriority`` is selected as the master.
+If all nodes have the same ``masterPriority``, then the one with the highest namespace quality (measured by DDS) is selected and, if a tie still exists, the system with highest ID is selected.
+
+.. _master priority: http://download.prismtech.com/docs/Vortex/html/ospl/DeploymentGuide/guide.html#masterpriority
+.. _ospl deployment guide: http://download.prismtech.com/docs/Vortex/html/ospl/DeploymentGuide/guide.html
+
+Some important notes to keep in mind:
+  - The value of ``masterPriority`` must be between 0 and 254.
+  - If ``masterPriority=255`` (the default), the selection process falls back to the legacy mode, which is not recommended.
+  - If ``masterPriority=0``, then that node will never become master.
+
+To control the ``masterPriority`` we introduced the ``OSPL_MASTER_PRIORITY`` environment variable in the ospl configuration file.
+
+One thing we noticed in the system is that the HRTO_ would usually be connected to issues with the master node.
+In some cases, the selected master would become too busy to be able to handle the alignment process which would cause the historical read alignment to either take longer or fail altogether.
+In order to minimize this problem we now carefully select a daemon to be the master, and make sure nothing else is attached to it.
+
+In general, the master daemon is configured with ``OSPL_MASTER_PRIORITY=201`` and the other daemons are set with ``OSPL_MASTER_PRIORITY=5`` or ``OSPL_MASTER_PRIORITY=10``.
+To ensure the single process nodes will not attempt to become masters we recommend setting ``OSPL_MASTER_PRIORITY=0``.
+
+.. _Namespace policy:
+
+Namespace alignee
+-----------------
+
+The durability service on all nodes are designed to store historical data for all applications in the system.
+Nevertheless, one can anticipate that this behavior would not scale for large scale systems.
+In fact, we have observed problems with this procedure in our systems as single process nodes are simply not capable of keeping up with the entire system traffic.
+
+DDS allow one to configure this behavior on the durability services by means of the `alignee policy`_.
+By default ``alignee=Initial`` which would cause the durability service to store historical data for all (non-volatile) topics.
+
+.. _alignee policy: http://download.prismtech.com/docs/Vortex/html/ospl/DeploymentGuide/guide.html#alignee
+
+In order to reduce the strain in the system we switched to ``alignee=Lazy`` configuration on daemons and, most importantly, single process nodes.
+That means the durability service on those nodes will only store data from the topics that are registered in them, substantially reducing the network traffic and computing load on the applications.
+
+.. _Lazy-master:
+
+Lazy master
+~~~~~~~~~~~
+
+One caveat we faced when configuring **all** systems with ``alignee=Lazy`` is that a ``Lazy`` master would not store historical data for systems not attached to it.
+At the same time, we also configured a dedicated master, with no systems attached to it.
+Ultimately, the master node ignores all topics causing requests for historical data to timeout and fail.
+
+To resolve this issue we must make sure to configure the master node with ``alignee=Initial``.
+For operations we may want to have backup master nodes with ``alignee=Initial`` in case the master node crashes.
+
 .. _Nublado:
 
 Nublado
@@ -536,7 +597,12 @@ After the initial test it seemed like the Jupyter notebooks from the nublado pla
 During the tests of the features introduced above it was possible to demonstrate that the single process mode is now capable of joining a domain and communicating with the CSCs in the system.
 In particular, the feature that seems to allow the use of single process mode is the introduction of the :ref:`DDS data partitioning <Implementing-a-new-DDS-data-partitioning-schema>`.
 
-This considerably simplify handling the nublado configuration as the containers can continue to be hosted in public repositories, there is no need to configure them to use shared memory and to worry about users notebooks crashing and corrupting the daemons they are attached to, potentially affecting other systems.
+Although single process from notebooks **can** work with a large scale system deployed with shared memory, we did noticed some small issues.
+Probably the most critical one is that creating a salobj Remote soon after creating a Domain will, in most cases, cause a HRTO_ problem.
+After inspecting the DDS logs it was possible to track this issue to trying to start DDS readers while the domain was still aligning with the other systems.
+Since this process is handled by the DDS daemon, using the shared memory more should help avoid such problems.
+
+In any case, the fact that we can operate with single process mode from nublado should take the pressure from having to implement shared memory in a short timeframe.
 
 .. _Conclusions-and-Future-Work:
 
