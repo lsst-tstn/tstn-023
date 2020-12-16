@@ -538,7 +538,7 @@ In a sense, the master node acts like a broker for historical data.
 
 The process of selecting a master for the system is handled by DDS using the ``masterPriority`` for each application, which is configured via ``NameSpaces/Policy/masterPriority`` entry in the ospl configuration file.
 
-The selection process is explained in details in the `master priority`_ section of the `ospl deployment guide`_.
+The selection process is explained in the `master priority`_ section of the `ospl deployment guide`_.
 Basically, the system with the highest value of ``masterPriority`` is selected as the master.
 If all nodes have the same ``masterPriority``, then the one with the highest namespace quality (measured by DDS) is selected and, if a tie still exists, the system with highest ID is selected.
 
@@ -546,7 +546,7 @@ If all nodes have the same ``masterPriority``, then the one with the highest nam
 .. _ospl deployment guide: http://download.prismtech.com/docs/Vortex/html/ospl/DeploymentGuide/guide.html
 
 Some important notes to keep in mind:
-  - The value of ``masterPriority`` must be between 0 and 254.
+  - In order to use the master priority selection algorithm, the value of ``masterPriority`` must be between 0 and 254.
   - If ``masterPriority=255`` (the default), the selection process falls back to the legacy mode, which is not recommended.
   - If ``masterPriority=0``, then that node will never become master.
 
@@ -565,10 +565,10 @@ Namespace alignee
 -----------------
 
 The durability service on all nodes are designed to store historical data for all applications in the system.
-Nevertheless, one can anticipate that this behavior would not scale for large scale systems.
+Nevertheless, one can anticipate that this behavior would not scale for large systems.
 In fact, we have observed problems with this procedure in our systems as single process nodes are simply not capable of keeping up with the entire system traffic.
 
-DDS allow one to configure this behavior on the durability services by means of the `alignee policy`_.
+DDS allows one to configure this behavior on the durability services by means of the `alignee policy`_.
 By default ``alignee=Initial`` which would cause the durability service to store historical data for all (non-volatile) topics.
 
 .. _alignee policy: http://download.prismtech.com/docs/Vortex/html/ospl/DeploymentGuide/guide.html#alignee
@@ -597,7 +597,7 @@ After the initial test it seemed like the Jupyter notebooks from the nublado pla
 During the tests of the features introduced above it was possible to demonstrate that the single process mode is now capable of joining a domain and communicating with the CSCs in the system.
 In particular, the feature that seems to allow the use of single process mode is the introduction of the :ref:`DDS data partitioning <Implementing-a-new-DDS-data-partitioning-schema>`.
 
-Although single process from notebooks **can** work with a large scale system deployed with shared memory, we did noticed some small issues.
+Although single process from notebooks **can** work with a large scale system deployed with shared memory, we did notice some small issues.
 Probably the most critical one is that creating a salobj Remote soon after creating a Domain will, in most cases, cause a HRTO_ problem.
 After inspecting the DDS logs it was possible to track this issue to trying to start DDS readers while the domain was still aligning with the other systems.
 Since this process is handled by the DDS daemon, using the shared memory more should help avoid such problems.
